@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "model": {
+    "name": "EfficientNetB0",
+    "version": null,
+    "framework": "Keras",
+    "format": ".keras",
+    "architecture": "EfficientNetB0",
+    "artifact": {
+      "filename": "EfficientNetB0.keras",
+      "size_bytes": 16855030,
+      "sha256": "a359031a8ea0c08f9a28e1e10b5ee8a5669958c40d9504845a8cf7d5667606ac"
+    },
+    "saved_with": {
+      "keras": "3.13.2"
+    },
+    "input": {
+      "shape": [
+        null,
+        224,
+        224,
+        3
+      ]
+    },
+    "output": {
+      "shape": [
+        null,
+        2
+      ],
+      "activation": "softmax",
+      "classes": [
+        {
+          "index": 0,
+          "name": "diseased"
+        },
+        {
+          "index": 1,
+          "name": "healthy"
+        }
+      ]
+    },
+    "preprocessing": {
+      "integrated": true,
+      "implementation": "KerasHub EfficientNet preprocessing"
+    }
+  },
+  "evaluation": {
+    "status": "preliminary",
+    "split": "validation",
+    "sample_count": 47,
+    "independent_test_set": false,
+    "class_support": {
+      "diseased": 13,
+      "healthy": 34
+    },
+    "metrics": {
+      "accuracy": 0.8511,
+      "diseased_precision": 0.8,
+      "diseased_recall": 0.6154,
+      "diseased_f1": 0.6957,
+      "healthy_precision": 0.86,
+      "healthy_recall": 0.94,
+      "healthy_f1": 0.9,
+      "average_latency_ms_per_image": 88.62,
+      "latency_stddev_ms_per_image": 29.05
+    }
+  },
+  "provenance": {
+    "training_run_id": null,
+    "dataset_name": null,
+    "dataset_version": null,
+    "dataset_sha256": null,
+    "source_commit": null,
+    "release_tag": null,
+    "created_at": null
+  }
+}
