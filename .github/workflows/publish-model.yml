@@ -1,0 +1,241 @@
+name: Validate and publish model Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag del Draft Release existente, por ejemplo model-v1.0.0"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  validate-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_id: ${{ steps.validate-assets.outputs.release_id }}
+      model_asset_id: ${{ steps.validate-assets.outputs.model_asset_id }}
+      manifest_asset_id: ${{ steps.validate-assets.outputs.manifest_asset_id }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download and validate Draft Release assets
+        id: validate-assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_DIRECTORY: ${{ runner.temp }}/lemonguard-release-assets
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          TAG_PATTERN = re.compile(r"model-v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
+          EXPECTED_ASSETS = ("EfficientNetB0.keras", "model-manifest.json")
+          API_ROOT = "https://api.github.com"
+          TOKEN = os.environ["GH_TOKEN"]
+          TAG = os.environ["RELEASE_TAG"]
+          REPOSITORY = os.environ["GITHUB_REPOSITORY"]
+
+          class StripAuthOnExternalRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+                  redirected = super().redirect_request(
+                      request, file_pointer, code, message, headers, new_url
+                  )
+                  if redirected is not None:
+                      old_origin = urllib.parse.urlsplit(request.full_url).netloc.lower()
+                      new_origin = urllib.parse.urlsplit(new_url).netloc.lower()
+                      if old_origin != new_origin:
+                          redirected.remove_header("Authorization")
+                          redirected.remove_header("Cookie")
+                          redirected.remove_header("Proxy-Authorization")
+                  return redirected
+
+          opener = urllib.request.build_opener(StripAuthOnExternalRedirect())
+
+          def api_request(method, path, accept="application/vnd.github+json", body=None):
+              headers = {
+                  "Accept": accept,
+                  "Authorization": f"Bearer {TOKEN}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "LemonGuard-AI-release-validator",
+              }
+              data = None if body is None else json.dumps(body).encode("utf-8")
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
+              request = urllib.request.Request(
+                  f"{API_ROOT}{path}", data=data, headers=headers, method=method
+              )
+              try:
+                  with opener.open(request, timeout=60) as response:
+                      return response.status, response.read()
+              except urllib.error.HTTPError as error:
+                  raise RuntimeError(f"GitHub API request failed with HTTP {error.code}.") from None
+              except urllib.error.URLError as error:
+                  raise RuntimeError("Could not reach GitHub API.") from error
+
+          if not TAG_PATTERN.fullmatch(TAG):
+              raise SystemExit("Invalid release_tag; expected model-vMAJOR.MINOR.PATCH.")
+
+          encoded_tag = urllib.parse.quote(TAG, safe="")
+          status, payload = api_request(
+              "GET", f"/repos/{REPOSITORY}/releases/tags/{encoded_tag}"
+          )
+          release = json.loads(payload)
+          if release.get("tag_name") != TAG:
+              raise SystemExit("Release tag_name does not match the requested tag.")
+          if release.get("draft") is not True:
+              raise SystemExit("The matching Release must still be a draft.")
+          if type(release.get("id")) is not int or release["id"] <= 0:
+              raise SystemExit("The matching Release has an invalid ID.")
+
+          assets = release.get("assets")
+          if not isinstance(assets, list):
+              raise SystemExit("Release asset metadata is missing or invalid.")
+
+          selected_assets = {}
+          for asset_name in EXPECTED_ASSETS:
+              matches = [asset for asset in assets if asset.get("name") == asset_name]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one Release asset named {asset_name}; found {len(matches)}."
+                  )
+              asset_id = matches[0].get("id")
+              if type(asset_id) is not int or asset_id <= 0:
+                  raise SystemExit(f"Release asset {asset_name} has an invalid asset ID.")
+              selected_assets[asset_name] = asset_id
+
+          release_directory = Path(os.environ["RELEASE_DIRECTORY"])
+          release_directory.mkdir(parents=True, exist_ok=True)
+          for asset_name, asset_id in selected_assets.items():
+              status, content = api_request(
+                  "GET",
+                  f"/repos/{REPOSITORY}/releases/assets/{asset_id}",
+                  accept="application/octet-stream",
+              )
+              if status != 200 or not content:
+                  raise SystemExit(f"Failed to download Release asset {asset_name}.")
+              (release_directory / asset_name).write_bytes(content)
+
+          subprocess.run(
+              [
+                  sys.executable,
+                  "src/validate_release.py",
+                  "--artifact",
+                  str(release_directory / "EfficientNetB0.keras"),
+                  "--manifest",
+                  str(release_directory / "model-manifest.json"),
+                  "--release-tag",
+                  TAG,
+              ],
+              check=True,
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"release_id={release['id']}\n")
+              output.write(f"model_asset_id={selected_assets['EfficientNetB0.keras']}\n")
+              output.write(f"manifest_asset_id={selected_assets['model-manifest.json']}\n")
+          print("Draft Release assets passed validation.")
+          PY
+
+  publish-release:
+    needs: validate-release
+    if: needs.validate-release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the validated Draft Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_ID: ${{ needs.validate-release.outputs.release_id }}
+          MODEL_ASSET_ID: ${{ needs.validate-release.outputs.model_asset_id }}
+          MANIFEST_ASSET_ID: ${{ needs.validate-release.outputs.manifest_asset_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
+
+          TAG_PATTERN = re.compile(r"model-v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
+          TAG = os.environ["RELEASE_TAG"]
+          RELEASE_ID = os.environ["RELEASE_ID"]
+          REPOSITORY = os.environ["GITHUB_REPOSITORY"]
+          TOKEN = os.environ["GH_TOKEN"]
+          API_ROOT = "https://api.github.com"
+          EXPECTED_ASSETS = {
+              "EfficientNetB0.keras": os.environ["MODEL_ASSET_ID"],
+              "model-manifest.json": os.environ["MANIFEST_ASSET_ID"],
+          }
+
+          if not TAG_PATTERN.fullmatch(TAG):
+              raise SystemExit("Invalid release_tag; expected model-vMAJOR.MINOR.PATCH.")
+          if not RELEASE_ID.isdecimal() or RELEASE_ID.startswith("0"):
+              raise SystemExit("The validated Release ID is invalid.")
+          if any(not asset_id.isdecimal() or asset_id.startswith("0") for asset_id in EXPECTED_ASSETS.values()):
+              raise SystemExit("A validated Release asset ID is invalid.")
+
+          def api_request(method, body=None):
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {TOKEN}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "LemonGuard-AI-release-publisher",
+              }
+              data = None if body is None else json.dumps(body).encode("utf-8")
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
+              request = urllib.request.Request(
+                  f"{API_ROOT}/repos/{REPOSITORY}/releases/{RELEASE_ID}",
+                  data=data,
+                  headers=headers,
+                  method=method,
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      return json.loads(response.read())
+              except urllib.error.HTTPError as error:
+                  raise RuntimeError(f"GitHub API request failed with HTTP {error.code}.") from None
+              except urllib.error.URLError as error:
+                  raise RuntimeError("Could not reach GitHub API.") from error
+
+          current = api_request("GET")
+          if current.get("tag_name") != TAG or current.get("draft") is not True:
+              raise SystemExit("The validated Release is no longer the matching draft.")
+          assets = current.get("assets")
+          if not isinstance(assets, list):
+              raise SystemExit("Release asset metadata is missing or invalid.")
+          for asset_name, validated_asset_id in EXPECTED_ASSETS.items():
+              matches = [asset for asset in assets if asset.get("name") == asset_name]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one Release asset named {asset_name}; found {len(matches)}."
+                  )
+              if str(matches[0].get("id")) != validated_asset_id:
+                  raise SystemExit(f"Release asset ID changed for {asset_name}; refusing to publish.")
+
+          published = api_request("PATCH", {"draft": False})
+          if published.get("tag_name") != TAG or published.get("draft") is not False:
+              raise SystemExit("GitHub did not confirm publication of the validated Release.")
+          print("Validated Release published.")
+          PY
