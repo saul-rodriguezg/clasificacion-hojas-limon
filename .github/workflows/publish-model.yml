@@ -7,6 +7,11 @@ on:
         description: "Tag del Draft Release existente, por ejemplo model-v1.0.0"
         required: true
         type: string
+      validation_only:
+        description: "Validar el Draft Release sin publicarlo"
+        required: false
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -157,7 +162,7 @@ jobs:
 
   publish-release:
     needs: validate-release
-    if: needs.validate-release.result == 'success'
+    if: inputs.validation_only == false && needs.validate-release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
