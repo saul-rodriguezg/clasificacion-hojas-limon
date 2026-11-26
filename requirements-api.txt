@@ -1,0 +1,12 @@
+fastapi==0.115.14
+uvicorn
+python-multipart==0.0.34
+Pillow
+numpy
+httpx
+
+# Runtime used by the existing KerasHub model artifact.
+keras==3.13.2
+tensorflow==2.20.0
+keras-hub==0.29.1
+tensorflow-text==2.20.0
