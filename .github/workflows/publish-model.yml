@@ -99,11 +99,30 @@ jobs:
           if not TAG_PATTERN.fullmatch(TAG):
               raise SystemExit("Invalid release_tag; expected model-vMAJOR.MINOR.PATCH.")
 
-          encoded_tag = urllib.parse.quote(TAG, safe="")
-          status, payload = api_request(
-              "GET", f"/repos/{REPOSITORY}/releases/tags/{encoded_tag}"
-          )
-          release = json.loads(payload)
+          matching_releases = []
+          page = 1
+          while True:
+              status, payload = api_request(
+                  "GET", f"/repos/{REPOSITORY}/releases?per_page=100&page={page}"
+              )
+              if status != 200 or not payload:
+                  raise RuntimeError("GitHub API returned an invalid Releases list response.")
+              page_releases = json.loads(payload)
+              if not isinstance(page_releases, list):
+                  raise RuntimeError("GitHub API returned an invalid Releases list response.")
+              matching_releases.extend(
+                  item for item in page_releases
+                  if isinstance(item, dict) and item.get("tag_name") == TAG
+              )
+              if len(page_releases) < 100:
+                  break
+              page += 1
+
+          if len(matching_releases) != 1:
+              raise SystemExit(
+                  f"Expected exactly one Release with tag_name {TAG}; found {len(matching_releases)}."
+              )
+          release = matching_releases[0]
           if release.get("tag_name") != TAG:
               raise SystemExit("Release tag_name does not match the requested tag.")
           if release.get("draft") is not True:
